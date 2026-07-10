@@ -68,8 +68,16 @@ struct SettingsView: View {
                         settings.hotkey = .defaultRightOption
                         coordinator.reinstallHotkey()
                     }
+                    Button("Left Option") {
+                        settings.hotkey = Hotkey(keyCode: 58, modifiers: .maskAlternate)
+                        coordinator.reinstallHotkey()
+                    }
                     Button("Right Command") {
                         settings.hotkey = Hotkey(keyCode: nil, modifiers: .maskCommand)
+                        coordinator.reinstallHotkey()
+                    }
+                    Button("Left Command") {
+                        settings.hotkey = Hotkey(keyCode: 55, modifiers: .maskCommand)
                         coordinator.reinstallHotkey()
                     }
                     Button("F5") {

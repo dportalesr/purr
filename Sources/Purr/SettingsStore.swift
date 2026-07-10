@@ -363,14 +363,29 @@ final class SettingsStore: ObservableObject {
 }
 
 // A hotkey is either:
-//   - bare modifiers (keyCode == nil, modifiers != 0)            e.g. hold Right Option
-//   - modifiers + key (both present)                              e.g. ⌃⌥ Space
-//   - bare key (keyCode != nil, modifiers == 0)                   e.g. F5
+//   - bare modifier (modifiers != 0, keyCode nil or a modifier device code)  e.g. hold Left Option
+//   - modifiers + key (both present, keyCode is a normal key)                 e.g. ⌃⌥ Space
+//   - bare key (keyCode != nil, modifiers == 0)                               e.g. F5
+//
+// A bare modifier picks a physical side two ways: keyCode nil means the right
+// key (the historical default, kept so stored hotkeys keep firing right), while
+// a specific left/right key stores its device keyCode directly (e.g. Left
+// Option = 58). CGEventFlags carries no side, so the device keyCode is what
+// distinguishes them; HotkeyManager matches on it.
 struct Hotkey: Equatable {
+    // Device-side keyCodes (NSEvent.keyCode on flagsChanged) for the modifier
+    // keys. When one sits in `keyCode`, the hotkey is that specific bare
+    // modifier rather than a key combination.
+    static let modifierKeyCodes: Set<Int64> = [54, 55, 56, 58, 59, 60, 61, 62]
+    static let leftModifierKeyCodes: Set<Int64> = [55, 56, 58, 59]
+
     var keyCode: Int64?
     var modifiers: CGEventFlags
 
-    var isBareModifier: Bool { keyCode == nil && !modifiers.isEmpty }
+    var isBareModifier: Bool {
+        if let code = keyCode { return Self.modifierKeyCodes.contains(code) }
+        return !modifiers.isEmpty
+    }
 
     static let defaultRightOption = Hotkey(
         keyCode: nil,
@@ -412,13 +427,16 @@ struct Hotkey: Equatable {
         if modifiers.contains(CGEventFlags.maskAlternate) { parts.append("⌥") }
         if modifiers.contains(CGEventFlags.maskShift) { parts.append("⇧") }
         if modifiers.contains(CGEventFlags.maskCommand) { parts.append("⌘") }
+        if isBareModifier {
+            // Bare modifier hotkey: clarify which physical side fires it. The
+            // right key is the usual choice (the left ones double as actual
+            // modifiers in everyday typing), but the left variants are offered
+            // too. keyCode nil is the historical right-side encoding.
+            let side = Self.leftModifierKeyCodes.contains(keyCode ?? -1) ? "Left" : "Right"
+            return "\(side) \(parts.joined())"
+        }
         if let code = keyCode {
             parts.append(KeyCodes.name(for: code))
-        } else if isBareModifier {
-            // Bare modifier hotkey: clarify that it's the right-side key
-            // (which is the whole point of bare-modifier mode - the left
-            // ones get used as actual modifiers in everyday typing).
-            return "Right \(parts.joined())"
         }
         return parts.joined()
     }

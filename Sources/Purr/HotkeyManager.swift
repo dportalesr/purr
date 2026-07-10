@@ -201,6 +201,9 @@ final class HotkeyManager {
     }
 
     private func bareModifierTargetKeyCode(_ hotkey: Hotkey) -> Int64 {
+        // A specific left/right modifier stores its device keyCode directly.
+        if let code = hotkey.keyCode { return code }
+        // Legacy encoding (keyCode nil): derive the right-side key from the bit.
         let mods = hotkey.modifiers
         if mods.contains(CGEventFlags.maskAlternate) { return Self.kRightOption }
         if mods.contains(CGEventFlags.maskCommand) { return Self.kRightCommand }
