@@ -118,7 +118,7 @@ final class ParakeetEngine: TranscriptionEngine {
                 onBatchProgress?(nil)
             }
         }
-        let progressHandler: DownloadUtils.ProgressHandler? = { [weak self] progress in
+        let progressHandler: ProgressHandler? = { [weak self] progress in
             let fraction = progress.fractionCompleted
             Task { @MainActor in
                 guard let self, self.batchDownloadActive else { return }
@@ -167,7 +167,7 @@ final class ParakeetEngine: TranscriptionEngine {
             chunkSize: Self.streamingChunk,
             eouDebounceMs: 1280
         )
-        let progressHandler: DownloadUtils.ProgressHandler? = { [weak self] progress in
+        let progressHandler: ProgressHandler? = { [weak self] progress in
             let fraction = progress.fractionCompleted
             Task { @MainActor in
                 guard let self, self.eouDownloadActive else { return }

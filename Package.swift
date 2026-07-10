@@ -12,7 +12,9 @@ let package = Package(
         // FluidAudio - Parakeet TDT v3 batch (multilingual, 10× faster than
         // Whisper Large V3 on Apple Silicon) plus Parakeet EOU streaming
         // (real-time chunked ASR with end-of-utterance detection).
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.8.0"),
+        // Pinned to 0.15.x: 0.16 removed the DownloadUtils namespace (ProgressHandler
+        // moved to module top-level), so a floating `from:` re-breaks the build on update.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", "0.15.0"..<"0.16.0"),
     ],
     targets: [
         // llama.cpp Apple XCFramework - powers Gemma 3 4B meeting summaries
