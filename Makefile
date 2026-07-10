@@ -28,12 +28,26 @@ RES_DIR       := $(CONTENTS)/Resources
 FRAMEWORKS_DIR:= $(CONTENTS)/Frameworks
 ENTITLEMENTS  := Resources/$(APP_NAME).entitlements
 INFO_PLIST    := Resources/Info.plist
-# Developer ID code-signing identity and notarization keychain profile. The
-# identity must exist in the login keychain (verify with
-# `security find-identity -p codesigning -v`); the profile is created once with
-# `xcrun notarytool store-credentials`. Override either on the command line.
-DEV_ID         ?= Developer ID Application: Arun Brahma (5JCFRMC367)
+# Code-signing identity and notarization keychain profile. Defaults to ad-hoc
+# ("-") so `make app` builds and runs on any Mac with no Apple certs - enough
+# for local use (TCC prompts route to an ad-hoc-signed bundle just fine).
+# Distribution (`make dmg` / `notarize-app`) needs a real Developer ID in the
+# login keychain (verify with `security find-identity -p codesigning -v`) plus
+# a notary profile from `xcrun notarytool store-credentials`; pass both on the
+# command line, e.g. `make dmg DEV_ID="Developer ID Application: You (TEAMID)"`.
+DEV_ID         ?= -
 NOTARY_PROFILE ?= purr-app
+# Hardened Runtime (--options runtime) + secure timestamp are required for
+# notarization, but they break a local ad-hoc build: Hardened Runtime turns on
+# Library Validation, which refuses to load the embedded llama.framework
+# because two independent ad-hoc signatures have mismatched (empty) Team IDs
+# ("different Team IDs" at launch). So enable them only for a real Developer ID;
+# ad-hoc (DEV_ID=-) signs without them and loads fine locally.
+ifeq ($(DEV_ID),-)
+HARDENED :=
+else
+HARDENED := --options runtime --timestamp
+endif
 # llama.cpp is shipped as an XCFramework binary target. SwiftPM stages
 # the macOS-arm64 slice next to the built executable; we copy that into
 # the bundle's Frameworks/ and add the rpath the executable needs to
@@ -73,8 +87,8 @@ app:
 	@# when we sign the outer bundle (no --deep: Apple recommends signing
 	@# inside-out for distribution). --options runtime turns on the Hardened
 	@# Runtime that notarization requires; --timestamp adds a secure timestamp.
-	@codesign --force --options runtime --timestamp --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
-	@codesign --force --options runtime --timestamp --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
+	@codesign --force $(HARDENED) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
+	@codesign --force $(HARDENED) --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
 	@# Bump the bundle's mtime. macOS keys its icon/LaunchServices cache on the
 	@# bundle modification date; copying a new AppIcon.icns into an existing
 	@# .app leaves the bundle dir mtime stale, so Finder keeps serving the old
