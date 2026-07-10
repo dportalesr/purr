@@ -249,8 +249,29 @@ struct SettingsView: View {
                     }
                 }
             } else {
-                Section("Parakeet engine") {
-                    ParakeetEngineCard(coordinator: coordinator)
+                Section("Parakeet model") {
+                    Picker("Model", selection: $settings.parakeetVersion) {
+                        ForEach(SettingsStore.ParakeetVersion.allCases) { version in
+                            Text(version.label).tag(version)
+                        }
+                    }
+                    .onChange(of: settings.parakeetVersion) { _, _ in
+                        // Load (and download if needed) the newly selected model.
+                        coordinator.reloadEngine()
+                    }
+                    ParakeetEngineCard(coordinator: coordinator, version: settings.parakeetVersion)
+                    if settings.parakeetVersion == .v3 {
+                        Picker("Language", selection: $settings.parakeetLanguage) {
+                            ForEach(ParakeetLanguage.all) { language in
+                                Text(language.name).tag(language.code)
+                            }
+                        }
+                        Text(
+                            "Auto-detect identifies the spoken language per phrase. Pin a language for short or code-switched speech. Live Smart Typing stays English."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -788,8 +809,15 @@ final class FluidModelViewModel: ObservableObject {
 
 private struct ParakeetEngineCard: View {
     @ObservedObject var coordinator: AppCoordinator
-    @State private var isInstalled = ParakeetEngine.batchIsInstalled()
+    let version: SettingsStore.ParakeetVersion
+    @State private var isInstalled: Bool
     @State private var error: String?
+
+    init(coordinator: AppCoordinator, version: SettingsStore.ParakeetVersion) {
+        self.coordinator = coordinator
+        self.version = version
+        _isInstalled = State(initialValue: ParakeetEngine.batchIsInstalled(for: version))
+    }
 
     var body: some View {
         let progress = coordinator.parakeetBatchProgress
@@ -797,8 +825,8 @@ private struct ParakeetEngineCard: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text("Parakeet TDT v2").font(.body.weight(.medium))
-                    Text("~450 MB").foregroundStyle(.secondary).font(.caption)
+                    Text("Parakeet TDT \(version.rawValue)").font(.body.weight(.medium))
+                    Text(version.approxSizeLabel).foregroundStyle(.secondary).font(.caption)
                     if downloading {
                         Text("downloading…").foregroundStyle(.secondary).font(.caption2)
                     } else if !isInstalled, error == nil {
@@ -836,11 +864,16 @@ private struct ParakeetEngineCard: View {
             }
         }
         .padding(.vertical, 4)
-        .onAppear { isInstalled = ParakeetEngine.batchIsInstalled() }
+        .onAppear { isInstalled = ParakeetEngine.batchIsInstalled(for: version) }
+        .onChange(of: version) { _, newVersion in
+            // Version switched: reflect the new model's on-disk state.
+            error = nil
+            isInstalled = ParakeetEngine.batchIsInstalled(for: newVersion)
+        }
         .onChange(of: coordinator.parakeetBatchProgress) { _, newValue in
             // A download just finished (or was cleared); re-check disk so the
             // card flips to Delete / Download correctly.
-            if newValue == nil { isInstalled = ParakeetEngine.batchIsInstalled() }
+            if newValue == nil { isInstalled = ParakeetEngine.batchIsInstalled(for: version) }
         }
     }
 
@@ -850,7 +883,7 @@ private struct ParakeetEngineCard: View {
             if case .failed(let err) = await coordinator.downloadParakeetModel() {
                 error = err.localizedDescription
             }
-            isInstalled = ParakeetEngine.batchIsInstalled()
+            isInstalled = ParakeetEngine.batchIsInstalled(for: version)
         }
     }
 

@@ -26,6 +26,8 @@ final class SettingsStore: ObservableObject {
         static let autoPaste = "stt.autoPaste"
         static let onboardingDone = "onboarding.done"
         static let engine = "stt.engine"
+        static let parakeetVersion = "stt.parakeetVersion"
+        static let parakeetLanguage = "stt.parakeetLanguage"
         static let translateToEnglish = "stt.translateToEnglish"
         static let translationSourceLanguage = "stt.translationSourceLanguage"
         static let smartTyping = "ui.smartTyping"
@@ -54,7 +56,7 @@ final class SettingsStore: ObservableObject {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .parakeet: return "Parakeet TDT v2 (recommended)"
+            case .parakeet: return "Parakeet TDT (recommended)"
             case .whisper: return "Whisper"
             }
         }
@@ -62,10 +64,37 @@ final class SettingsStore: ObservableObject {
             switch self {
             case .parakeet:
                 return
-                    "10× faster on Apple Silicon. English-only, top accuracy. No silence hallucinations. Streaming-capable."
+                    "10× faster on Apple Silicon. No silence hallucinations. Streaming-capable. v2 is English-only; v3 covers 25 languages with auto-detect (pick below)."
             case .whisper: return "100+ languages including Asian and Arabic. Batch only."
             }
         }
+    }
+
+    // Which Parakeet TDT batch model backs dictation, meetings, and voice
+    // editing. v2 is English-only and the fastest; v3 covers ~25 languages with
+    // auto-detection. Each version has its own on-disk model folder, so the two
+    // don't clobber each other and switching is a re-download, not a re-fetch.
+    // The live Smart Typing streaming model is separate and stays English
+    // regardless of this choice.
+    enum ParakeetVersion: String, Codable, CaseIterable, Identifiable {
+        case v2
+        case v3
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .v2: return "v2 - English, fastest"
+            case .v3: return "v3 - 25 languages, auto-detect"
+            }
+        }
+        // On-disk folder under Purr's models directory. Distinct per version so
+        // both can coexist and deleting one leaves the other intact.
+        var modelFolderName: String {
+            switch self {
+            case .v2: return "parakeet-tdt-0.6b-v2"
+            case .v3: return "parakeet-tdt-0.6b-v3"
+            }
+        }
+        var approxSizeLabel: String { "~450 MB" }
     }
 
     enum HotkeyMode: String, Codable, CaseIterable, Identifiable {
@@ -134,6 +163,20 @@ final class SettingsStore: ObservableObject {
 
     @Published var engine: Engine {
         didSet { defaults.set(engine.rawValue, forKey: Keys.engine) }
+    }
+
+    // Selected Parakeet batch model version. Read by ParakeetEngine to pick the
+    // model folder + download version and, for v3, whether to honour
+    // parakeetLanguage. Defaults to v2 so existing installs are unchanged.
+    @Published var parakeetVersion: ParakeetVersion {
+        didSet { defaults.set(parakeetVersion.rawValue, forKey: Keys.parakeetVersion) }
+    }
+
+    // Language Parakeet v3 transcribes in. Empty string = auto-detect (the
+    // default). A pinned value is a ParakeetLanguage code (ISO 639-1) handed to
+    // FluidAudio's script-aware token filter. Inert on v2 (English-only).
+    @Published var parakeetLanguage: String {
+        didSet { defaults.set(parakeetLanguage, forKey: Keys.parakeetLanguage) }
     }
 
     // Whisper-only: when on, transcription runs the X→English translate task
@@ -251,6 +294,10 @@ final class SettingsStore: ObservableObject {
         self.onboardingDone = defaults.bool(forKey: Keys.onboardingDone)
         let storedEngine = defaults.string(forKey: Keys.engine) ?? Engine.parakeet.rawValue
         self.engine = Engine(rawValue: storedEngine) ?? .parakeet
+        let storedParakeetVersion =
+            defaults.string(forKey: Keys.parakeetVersion) ?? ParakeetVersion.v2.rawValue
+        self.parakeetVersion = ParakeetVersion(rawValue: storedParakeetVersion) ?? .v2
+        self.parakeetLanguage = defaults.string(forKey: Keys.parakeetLanguage) ?? ""
         self.translateToEnglish = defaults.object(forKey: Keys.translateToEnglish) as? Bool ?? false
         self.translationSourceLanguage = defaults.string(forKey: Keys.translationSourceLanguage) ?? ""
         self.smartTyping = defaults.object(forKey: Keys.smartTyping) as? Bool ?? false
@@ -319,6 +366,8 @@ final class SettingsStore: ObservableObject {
         showMeetingHUD = true
         voiceEditEnabled = false
         engine = .parakeet
+        parakeetVersion = .v2
+        parakeetLanguage = ""
         modelName = ModelManager.defaultModel
         translateToEnglish = false
         translationSourceLanguage = ""

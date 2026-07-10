@@ -27,6 +27,11 @@ final class ParakeetEngine: TranscriptionEngine {
     nonisolated let supportsStreaming: Bool = true
 
     private var batchManager: AsrManager?
+    // Which Parakeet version `batchManager` was loaded with. When the user
+    // switches version in Settings this no longer matches the selection, so the
+    // next load unloads and re-fetches the right model (mirrors WhisperEngine's
+    // model-identity guard).
+    private var loadedVersion: SettingsStore.ParakeetVersion?
     // The single in-flight batch download+load. Concurrent callers (an automatic
     // warmup and a manual Settings download can fire at once) coalesce onto this
     // one task instead of each starting a parallel ~450 MB pull to the same folder.
@@ -86,7 +91,12 @@ final class ParakeetEngine: TranscriptionEngine {
     // Settings download and an automatic warmup firing together still pull the
     // weights exactly once.
     func downloadAndLoadBatchManager() async throws {
-        if batchManager != nil { return }
+        let version = SettingsStore.shared.parakeetVersion
+        // Already loaded with the selected version: nothing to do.
+        if batchManager != nil, loadedVersion == version { return }
+        // Loaded, but the user switched version: drop the old graphs (and cancel
+        // any in-flight load for the old version) before fetching the new one.
+        if batchManager != nil, loadedVersion != version { unloadBatchManager() }
         if let inFlight = batchLoadTask {
             try await inFlight.value
             return
@@ -105,9 +115,10 @@ final class ParakeetEngine: TranscriptionEngine {
     // guards the assignment so a delete that cancels the task mid-flight can't
     // resurrect the manager from removed files.
     private func loadBatchManager() async throws {
+        let version = SettingsStore.shared.parakeetVersion
         // Only surface progress when weights will actually be fetched; a
         // load-from-disk on warm-up shouldn't flash "downloading…".
-        let willDownload = !Self.batchIsInstalled()
+        let willDownload = !Self.batchIsInstalled(for: version)
         if willDownload {
             batchDownloadActive = true
             onBatchProgress?(0)
@@ -126,12 +137,15 @@ final class ParakeetEngine: TranscriptionEngine {
             }
         }
         let models = try await AsrModels.downloadAndLoad(
-            to: Self.batchModelDirectory, version: .v2, progressHandler: progressHandler)
+            to: Self.batchModelDirectory(for: version),
+            version: version.asrModelVersion,
+            progressHandler: progressHandler)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         try Task.checkCancellation()
         batchManager = manager
-        log.info("Parakeet TDT v2 downloaded and warmed up.")
+        loadedVersion = version
+        log.info("Parakeet TDT \(version.rawValue, privacy: .public) downloaded and warmed up.")
     }
 
     private func loadStreamingManager() async {
@@ -196,6 +210,7 @@ final class ParakeetEngine: TranscriptionEngine {
         batchLoadTask?.cancel()
         batchLoadTask = nil
         batchManager = nil
+        loadedVersion = nil
         log.info("Parakeet TDT batch unloaded.")
     }
 
@@ -203,15 +218,29 @@ final class ParakeetEngine: TranscriptionEngine {
     // models folder (instead of FluidAudio's default) so every Purr model sits
     // in one place that uninstalling removes. `downloadAndLoad(to:)` treats
     // this as the model's own directory and writes/reads the CoreML bundles here.
+    // Each version's weights live in their own folder so v2 and v3 coexist.
+    static func batchModelDirectory(for version: SettingsStore.ParakeetVersion) -> URL {
+        ModelManager.modelsDirectory.appendingPathComponent(
+            version.modelFolderName, isDirectory: true)
+    }
+
+    // The folder for the version the user currently has selected. The no-arg
+    // install/delete helpers below operate on this one - i.e. the model the
+    // Settings card and dictation actually use right now.
     static var batchModelDirectory: URL {
-        ModelManager.modelsDirectory.appendingPathComponent("parakeet-tdt-0.6b-v2", isDirectory: true)
+        batchModelDirectory(for: SettingsStore.shared.parakeetVersion)
+    }
+
+    static func batchIsInstalled(for version: SettingsStore.ParakeetVersion) -> Bool {
+        guard
+            let contents = try? FileManager.default.contentsOfDirectory(
+                atPath: batchModelDirectory(for: version).path)
+        else { return false }
+        return !contents.isEmpty
     }
 
     static func batchIsInstalled() -> Bool {
-        guard
-            let contents = try? FileManager.default.contentsOfDirectory(atPath: batchModelDirectory.path)
-        else { return false }
-        return !contents.isEmpty
+        batchIsInstalled(for: SettingsStore.shared.parakeetVersion)
     }
 
     static func batchDelete() throws {
@@ -249,23 +278,36 @@ final class ParakeetEngine: TranscriptionEngine {
     // Returns token timings (dropped by transcribe()) for speaker-segment
     // alignment when merging diarization output.
     //
-    // We run the English-only v2 model (highest English recall on the Open
-    // ASR Leaderboard; non-English dictation uses the Whisper engine instead).
-    // `language: .english` is a no-op on v2 - it only drives v3's multilingual
-    // script-aware token filter - but is left in so the call is correct if the
-    // model version is ever switched back.
+    // The `language` argument drives v3's multilingual script-aware token
+    // filter: .english on v2 (English-only, a no-op there), and on v3 either the
+    // user's pinned language or nil for auto-detection.
     func transcribeDetailed(samples: [Float]) async throws -> ASRResult {
-        if batchManager == nil { await warmup() }
+        let version = SettingsStore.shared.parakeetVersion
+        // Re-warm when nothing is loaded or the user switched version since the
+        // current graphs were loaded (warmup routes through the version guard).
+        if batchManager == nil || loadedVersion != version { await warmup() }
         guard let manager = batchManager else { throw EngineError.notLoaded }
         var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
         let started = Date()
         let result = try await manager.transcribe(
-            samples, decoderState: &state, language: .english)
+            samples, decoderState: &state, language: Self.batchLanguage(for: version))
         let elapsed = Date().timeIntervalSince(started)
         log.info(
             "Parakeet transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s"
         )
         return result
+    }
+
+    // Maps the selected version + language setting to FluidAudio's `Language?`.
+    // v2 is English-only; v3 uses the pinned language or nil (auto-detect).
+    private static func batchLanguage(for version: SettingsStore.ParakeetVersion) -> Language? {
+        switch version {
+        case .v2:
+            return .english
+        case .v3:
+            let code = SettingsStore.shared.parakeetLanguage
+            return code.isEmpty ? nil : Language(rawValue: code)
+        }
     }
 
     func makeStreamingSession() async throws -> any StreamingSession {
@@ -428,5 +470,16 @@ private final class PartialDiff: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         lastEmitted = ""
+    }
+}
+
+// Maps Purr's version enum to FluidAudio's. Lives here (not in SettingsStore)
+// so the settings layer stays free of the FluidAudio import.
+extension SettingsStore.ParakeetVersion {
+    var asrModelVersion: AsrModelVersion {
+        switch self {
+        case .v2: return .v2
+        case .v3: return .v3
+        }
     }
 }
